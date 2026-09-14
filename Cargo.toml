@@ -1,6 +1,6 @@
 [package]
 name = "enchanter"
-version = "1.0.1"
+version = "0.8.0"
 edition = "2024"
 description = "A focused AI agent harness"
 license = "MIT"

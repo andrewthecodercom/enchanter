@@ -5,45 +5,10 @@ All notable changes to enchanter are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] - 2026-08-31
+## [0.8.0] - 2026-09-14
 
-Security and robustness release, closing the findings from the v1.0.0
-security code review.
-
-### Added
-- **Tool approval mode** — `security.require_tool_approval: true` asks the
-  user before running dangerous tools (`exec_command`, `write_file`,
-  `edit_file`, `memory`, `knowledge`, and all MCP tools). REPL prompts
-  y/N; web UI renders Approve/Reject cards. Read-only tools are exempt.
-  Fail-closed: no approval channel, timeout, or rejection denies the call.
-- **Optional web UI token auth** — `enchanter serve --token <TOKEN>` (or
-  `web.auth_token` in config) requires `Authorization: Bearer` on all
-  `/api/*` routes. SSE endpoints also accept `?token=`. Loopback-only
-  default unchanged when no token is set.
-- **API retry/backoff** — transient failures (429, 5xx, connect/read
-  timeouts) retry with exponential backoff plus jitter, honoring
-  `Retry-After`. Configurable via `agent.retry` (`max_attempts`,
-  `base_delay_ms`, `max_delay_ms`). 4xx client errors are never retried.
-- **`docs/security.md`** — full threat-model page: Landlock scope and
-  limits, non-Linux fallback semantics, approval mode, web auth, secrets
-  handling, prompt-injection hardening, timeouts, token estimation.
-
-### Changed
-- `exec_command` timeout (30s) now kills the child's **process group** on
-  Unix so `sh -c` cannot orphan background children. Timeout value is a
-  named constant.
-- `security.require_tool_approval` field added (default `false` — no
-  behavior change).
-
-### Security
-- Human-in-the-loop gate for dangerous tools (opt-in).
-- Optional shared-secret auth for the web UI (loopback default unchanged).
-- Process-group cleanup on exec timeout.
-
-## [1.0.0] - 2026-08-28
-
-First stable release. Web UI, setup wizard, token usage tracking, and
-cross-platform prebuilt binaries.
+Web UI, setup wizard, token usage tracking, cross-platform prebuilt
+binaries, and the security hardening pass.
 
 ### Added
 - **Web UI** — `enchanter serve` starts a local web interface (default `http://127.0.0.1:3005`) with streaming responses, tool-call visibility in a side panel, model switching, session resume/rename, and token/context display. Replaces the ratatui TUI.
@@ -53,10 +18,21 @@ cross-platform prebuilt binaries.
 - **Session titles** — sessions get auto-derived titles (first user message); rename via web UI or API.
 - **Prebuilt binaries** — GitHub Actions release workflow builds native binaries for Linux, macOS, and Windows on x86_64 and arm64, attached to the release.
 - **Tool side panel** — web UI shows tool calls (arguments + results) in a left-hand panel instead of inline with the conversation.
+- **Tool approval mode** — `security.require_tool_approval: true` asks the user before running dangerous tools (`exec_command`, `write_file`, `edit_file`, `memory`, `knowledge`, and all MCP tools). REPL prompts y/N; web UI renders Approve/Reject cards. Read-only tools are exempt. Fail-closed: no approval channel, timeout, or rejection denies the call.
+- **Optional web UI token auth** — `enchanter serve --token <TOKEN>` (or `web.auth_token` in config) requires `Authorization: Bearer` on all `/api/*` routes. SSE endpoints also accept `?token=`. Loopback-only default unchanged when no token is set.
+- **API retry/backoff** — transient failures (429, 5xx, connect/read timeouts) retry with exponential backoff plus jitter, honoring `Retry-After`. Configurable via `agent.retry` (`max_attempts`, `base_delay_ms`, `max_delay_ms`). 4xx client errors are never retried.
+- **`docs/security.md`** — full threat-model page: Landlock scope and limits, non-Linux fallback semantics, approval mode, web auth, secrets handling, prompt-injection hardening, timeouts, token estimation.
 
 ### Changed
 - Switched default web port to 3005 (`enchanter serve --port` to override).
 - REPL status bar hardened to avoid fighting terminal input echo (scrolls as a regular line).
+- `exec_command` timeout (30s) now kills the child's **process group** on Unix so `sh -c` cannot orphan background children. Timeout value is a named constant.
+- `security.require_tool_approval` field added (default `false` — no behavior change).
+
+### Security
+- Human-in-the-loop gate for dangerous tools (opt-in).
+- Optional shared-secret auth for the web UI (loopback default unchanged).
+- Process-group cleanup on exec timeout.
 
 ### Removed
 - TUI mode (`--tui`, ratatui/crossterm) — superseded by the web UI.
@@ -209,8 +185,8 @@ a round of critical-bug fixes and cleanup.
 
 ---
 
-[Unreleased]: https://github.com/andrewthecodertx/enchanter/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/andrewthecodertx/enchanter/compare/v0.9.1...v1.0.0
+[Unreleased]: https://github.com/andrewthecodertx/enchanter/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/andrewthecodertx/enchanter/compare/v0.9.1...v0.8.0
 [0.9.1]: https://github.com/andrewthecodertx/enchanter/compare/v0.4.3...v0.9.1
 [0.4.3]: https://github.com/andrewthecodertx/enchanter/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/andrewthecodertx/enchanter/compare/v0.4.1...v0.4.2

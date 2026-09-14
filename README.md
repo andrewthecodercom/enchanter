@@ -4,7 +4,7 @@ A focused AI agent harness. Single Rust binary, any OpenAI-compatible provider, 
 
 Reads your SOUL, loads your memory, finds your skills, talks to your model. Nothing more.
 
-**[Full documentation →](https://andrewthecoder.com/projects/enchanter)** · **[Changelog](CHANGELOG.md)** · **Latest release: [v1.0.1](https://github.com/andrewthecodertx/enchanter/releases)**
+**[Full documentation →](https://andrewthecoder.com/projects/enchanter)** · **[Changelog](CHANGELOG.md)** · **Latest release: [v0.8.0](https://github.com/andrewthecodertx/enchanter/releases)**
 
 ## Setup
 

@@ -95,7 +95,7 @@ and every MCP tool pause and ask the user before running. Read-only tools
   sessions), the tool is *rejected* rather than auto-approved. Missing
   replies and timeouts (5 min) also reject.
 
-Default is `false` — behavior unchanged from v1.0.0.
+Default is `false` — added in 0.8.0.
 
 ## Web UI
 
