@@ -122,13 +122,21 @@ fn as_mapping_mut(value: &mut serde_yaml::Value) -> &mut serde_yaml::Mapping {
     value.as_mapping_mut().expect("mapping guaranteed")
 }
 
+/// Whether the config tree contains a non-empty `api_key` anywhere — the
+/// top-level model key OR any `providers.<name>.api_key`. Configs whose only
+/// secret lives under a provider still need owner-only permissions.
 fn has_api_key(value: &serde_yaml::Value) -> bool {
-    value
-        .get("model")
-        .and_then(|m| m.get("api_key"))
-        .and_then(|k| k.as_str())
-        .map(|k| !k.trim().is_empty())
-        .unwrap_or(false)
+    match value {
+        serde_yaml::Value::Mapping(map) => map.iter().any(|(k, v)| {
+            if k.as_str() == Some("api_key") {
+                v.as_str().map(|s| !s.trim().is_empty()).unwrap_or(false)
+            } else {
+                has_api_key(v)
+            }
+        }),
+        serde_yaml::Value::Sequence(items) => items.iter().any(has_api_key),
+        _ => false,
+    }
 }
 
 #[cfg(unix)]
@@ -150,9 +158,32 @@ fn set_owner_only(_path: &std::path::Path) {}
 pub fn write_config_value(value: &serde_yaml::Value, path: &std::path::Path) -> Result<()> {
     let yaml = serde_yaml::to_string(value)?;
     let tmp = path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, &yaml).with_context(|| format!("writing {}", tmp.display()))?;
     if has_api_key(value) {
-        set_owner_only(&tmp);
+        // Create the temp file owner-only *before* writing the secret, so it
+        // is never briefly world-readable (default umask creates 0644).
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .with_context(|| format!("writing {}", tmp.display()))?;
+            f.write_all(yaml.as_bytes())
+                .with_context(|| format!("writing {}", tmp.display()))?;
+            // mode() only applies at creation — fix up a pre-existing tmp file.
+            set_owner_only(&tmp);
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&tmp, &yaml)
+                .with_context(|| format!("writing {}", tmp.display()))?;
+        }
+    } else {
+        std::fs::write(&tmp, &yaml).with_context(|| format!("writing {}", tmp.display()))?;
     }
     std::fs::rename(&tmp, path)
         .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
@@ -338,7 +369,10 @@ fn run_flow(existing: Option<&Config>, seed_files: bool, title: &str) -> Result<
     print!("  Save this configuration? [Y/n] ");
     flush_stdout();
     let confirm = read_line();
-    if !confirm.is_empty() && !matches!(confirm.as_str(), "y" | "Y" | "yes" | "YES") {
+    if !confirm.is_empty()
+        && !confirm.eq_ignore_ascii_case("y")
+        && !confirm.eq_ignore_ascii_case("yes")
+    {
         println!("  {} Configuration not saved.", "✗".red());
         return Ok(false);
     }
@@ -366,7 +400,9 @@ fn run_flow(existing: Option<&Config>, seed_files: bool, title: &str) -> Result<
                 );
             }
             None => {
-                m.remove(serde_yaml::Value::from("api_key"));
+                // "Blank to skip" means leave the existing key untouched —
+                // removing it here would silently delete a stored credential
+                // when editing an existing config (`enchanter config --edit`).
             }
         }
     }

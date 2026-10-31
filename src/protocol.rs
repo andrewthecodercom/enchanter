@@ -25,6 +25,12 @@ pub enum Request {
         no_stream: bool,
         #[serde(default)]
         no_tools: bool,
+        /// The client's working directory. The daemon chdir()s to it before
+        /// running the turn so relative paths in tool calls (and the
+        /// allowed-paths check on the CWD) resolve against the caller's
+        /// directory instead of the daemon's stale spawn-time CWD.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     /// Health check — daemon replies with Pong.
     Ping,
@@ -140,6 +146,7 @@ mod tests {
             system: None,
             no_stream: false,
             no_tools: false,
+            cwd: None,
         };
         let jsonl = req.to_jsonl().unwrap();
         let decoded = Request::from_jsonl(&jsonl).unwrap();
@@ -173,6 +180,7 @@ mod tests {
             system: None,
             no_stream: false,
             no_tools: false,
+            cwd: None,
         };
         let jsonl = req.to_jsonl().unwrap();
         let decoded = Request::from_jsonl(&jsonl).unwrap();
@@ -187,12 +195,14 @@ mod tests {
                 system,
                 no_stream,
                 no_tools,
+                cwd,
             } => {
                 assert_eq!(prompt, "hello");
                 assert!(model.is_none());
                 assert!(system.is_none());
                 assert!(!no_stream);
                 assert!(!no_tools);
+                assert!(cwd.is_none());
             }
             _ => panic!("expected Chat variant"),
         }

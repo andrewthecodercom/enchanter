@@ -35,11 +35,40 @@ use crate::summary::truncate_chars;
 
 const ENTRY_DELIMITER: &str = "\n§\n";
 
+/// Character budget for the text handed to the summarizer LLM in one call.
+const SUMMARIZE_INPUT_CHAR_CAP: usize = 12_000;
+
+/// How many of the leading `entries` fit within `budget` characters when
+/// joined with the "\n---\n" separator (5 chars per join). Returns a count in
+/// `0..=entries.len()`; the caller decides how to handle 0 (a single entry
+/// larger than the whole budget).
+fn split_at_char_budget(entries: &[String], budget: usize) -> usize {
+    let mut used = 0usize;
+    for (i, entry) in entries.iter().enumerate() {
+        used += entry.chars().count();
+        if i > 0 {
+            used += 5; // "\n---\n" separator
+        }
+        if used > budget {
+            return i;
+        }
+    }
+    entries.len()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MemoryStore {
     pub memory_entries: Vec<String>,
     pub user_entries: Vec<String>,
     pub summary: Option<String>,
+    /// Project overlay entries merged in for this session only (from
+    /// `.enchanter/memories/`). They are shown in the prompt and in
+    /// `memory list` alongside the global entries, but are never written
+    /// back to the global MEMORY.md/USER.md — otherwise project-scoped
+    /// entries would leak permanently into the global store (and duplicate
+    /// on every session, since the overlay is re-merged each load).
+    pub overlay_memory_entries: Vec<String>,
+    pub overlay_user_entries: Vec<String>,
 }
 
 impl MemoryStore {
@@ -80,6 +109,8 @@ impl MemoryStore {
             memory_entries,
             user_entries,
             summary,
+            overlay_memory_entries: Vec::new(),
+            overlay_user_entries: Vec::new(),
         })
     }
 
@@ -167,14 +198,16 @@ impl MemoryStore {
 
     /// Merge project overlay memories from a directory.
     /// Adds entries from project MEMORY.md and USER.md to this store.
-    /// Does not save to disk — merge is in-memory only for the session.
+    /// Does not save to disk — merge is in-memory only for the session, and
+    /// the overlay entries are kept separate so later saves of the global
+    /// store never persist them.
     pub fn merge_from_dir(&mut self, dir: &std::path::Path) -> Result<()> {
         let memory_path = dir.join("MEMORY.md");
         if memory_path.exists() {
             let content = std::fs::read_to_string(&memory_path)
                 .with_context(|| format!("reading project {}", memory_path.display()))?;
             let entries = Self::parse_entries(&content);
-            self.memory_entries.extend(entries);
+            self.overlay_memory_entries.extend(entries);
         }
 
         let user_path = dir.join("USER.md");
@@ -182,10 +215,20 @@ impl MemoryStore {
             let content = std::fs::read_to_string(&user_path)
                 .with_context(|| format!("reading project {}", user_path.display()))?;
             let entries = Self::parse_entries(&content);
-            self.user_entries.extend(entries);
+            self.overlay_user_entries.extend(entries);
         }
 
         Ok(())
+    }
+
+    /// Global memory entries followed by project overlay entries.
+    pub fn all_memory_entries(&self) -> impl Iterator<Item = &String> {
+        self.memory_entries.iter().chain(&self.overlay_memory_entries)
+    }
+
+    /// Global user entries followed by project overlay entries.
+    pub fn all_user_entries(&self) -> impl Iterator<Item = &String> {
+        self.user_entries.iter().chain(&self.overlay_user_entries)
     }
 
     /// Manage memory: cap entries and summarize old ones if threshold exceeded.
@@ -210,8 +253,15 @@ impl MemoryStore {
             let old_entries: Vec<String> = self.memory_entries[..split_point].to_vec();
             let recent_entries: Vec<String> = self.memory_entries[split_point..].to_vec();
 
+            // The summarizer input is capped (see summarize_entries). Only
+            // feed it the oldest entries that fit under the cap and keep the
+            // remainder as regular entries — otherwise everything past the
+            // cap would be silently discarded without ever being summarized.
+            let summarizable = split_at_char_budget(&old_entries, SUMMARIZE_INPUT_CHAR_CAP);
+            let (to_summarize, kept) = old_entries.split_at(summarizable.max(1));
+
             // Summarize old entries
-            let new_summary = self.summarize_entries(client, &old_entries).await?;
+            let new_summary = self.summarize_entries(client, to_summarize).await?;
 
             // Merge with existing summary
             let merged_summary = match &self.summary {
@@ -225,14 +275,21 @@ impl MemoryStore {
             };
 
             self.summary = Some(merged_summary);
-            self.memory_entries = recent_entries;
+            // Entries that didn't fit the summarizer input stay in the list.
+            let mut remaining = kept.to_vec();
+            remaining.extend(recent_entries);
+            self.memory_entries = remaining;
 
-            // Persist summary to disk
+            // Persist both the summary and the trimmed entry list — without
+            // saving the entries here, the summarized entries would resurrect
+            // on the next load and get folded into the summary again.
             self.save_summary()?;
+            self.save_memory()?;
         } else {
             // Over max_entries but under threshold — just cap
             let cutoff = total - config.max_entries;
             self.memory_entries = self.memory_entries[cutoff as usize..].to_vec();
+            self.save_memory()?;
         }
 
         Ok(())
@@ -244,8 +301,8 @@ impl MemoryStore {
 
         // Truncate if very long to avoid token limits.
         // Use truncate_chars to avoid UTF-8 boundary panics on multi-byte chars.
-        let truncated = if entries_text.chars().count() > 12_000 {
-            truncate_chars(&entries_text, 12_000)
+        let truncated = if entries_text.chars().count() > SUMMARIZE_INPUT_CHAR_CAP {
+            truncate_chars(&entries_text, SUMMARIZE_INPUT_CHAR_CAP)
         } else {
             entries_text
         };
@@ -275,31 +332,33 @@ impl MemoryStore {
     pub fn format_for_prompt(&self) -> String {
         let mut parts = Vec::new();
 
-        if !self.user_entries.is_empty() {
-            parts.push(format!(
-                "═══ USER PROFILE ═══\n{}",
-                self.user_entries.join("\n---\n")
-            ));
+        let user_entries: Vec<&String> = self.all_user_entries().collect();
+        if !user_entries.is_empty() {
+            let joined: Vec<&str> = user_entries.iter().map(|s| s.as_str()).collect();
+            parts.push(format!("═══ USER PROFILE ═══\n{}", joined.join("\n---\n")));
         }
 
         if let Some(summary) = &self.summary {
             parts.push(format!("═══ MEMORY SUMMARY ═══\n{}", summary));
         }
 
-        if !self.memory_entries.is_empty() {
-            parts.push(format!(
-                "═══ MEMORY ═══\n{}",
-                self.memory_entries.join("\n---\n")
-            ));
+        let memory_entries: Vec<&String> = self.all_memory_entries().collect();
+        if !memory_entries.is_empty() {
+            let joined: Vec<&str> = memory_entries.iter().map(|s| s.as_str()).collect();
+            parts.push(format!("═══ MEMORY ═══\n{}", joined.join("\n---\n")));
         }
 
         parts.join("\n\n")
     }
 
-    /// Total count of memory entries (for display).
+    /// Total count of memory entries (for display), including project
+    /// overlay entries merged for this session.
     #[allow(dead_code)]
     pub fn total_entry_count(&self) -> usize {
-        self.memory_entries.len() + self.user_entries.len()
+        self.memory_entries.len()
+            + self.overlay_memory_entries.len()
+            + self.user_entries.len()
+            + self.overlay_user_entries.len()
     }
 }
 
@@ -331,7 +390,7 @@ mod tests {
         let store = MemoryStore {
             user_entries: vec!["User is Andrew".to_string()],
             memory_entries: vec!["fact one".to_string()],
-            summary: None,
+            ..Default::default()
         };
         let formatted = store.format_for_prompt();
         assert!(formatted.contains("USER PROFILE"));
@@ -346,6 +405,7 @@ mod tests {
             user_entries: vec![],
             memory_entries: vec!["recent fact".to_string()],
             summary: Some("condensed old facts here".to_string()),
+            ..Default::default()
         };
         let formatted = store.format_for_prompt();
         assert!(formatted.contains("MEMORY SUMMARY"));
@@ -358,7 +418,7 @@ mod tests {
         let store = MemoryStore {
             user_entries: vec!["u1".to_string(), "u2".to_string()],
             memory_entries: vec!["m1".to_string()],
-            summary: None,
+            ..Default::default()
         };
         assert_eq!(store.total_entry_count(), 3);
     }
@@ -381,21 +441,56 @@ mod tests {
         let truncated = crate::summary::truncate_chars(mixed, 5);
         assert_eq!(truncated.chars().count(), 5);
     }
-}
-#[test]
-fn cap_under_max_no_change() {
-    let store = MemoryStore {
-        memory_entries: (0..10).map(|i| format!("entry {}", i)).collect(),
-        user_entries: vec![],
-        summary: None,
-    };
-    let config = MemoryConfig {
-        max_entries: 50,
-        summarize_threshold: 40,
-    };
-    // total is 10, under max_entries — manage should be a no-op
-    // (but manage is async and needs a client, just test the logic indirectly)
-    assert_eq!(store.memory_entries.len(), 10);
-    let _ = &config; // verify it compiles
-    let _ = &store;
+
+    #[test]
+    fn split_at_char_budget_fits() {
+        // All entries fit under the budget.
+        let entries: Vec<String> = (0..5).map(|i| format!("entry {}", i)).collect();
+        assert_eq!(split_at_char_budget(&entries, 1000), 5);
+    }
+
+    #[test]
+    fn split_at_char_budget_cuts_at_limit() {
+        // Each entry is 10 chars; joined with "\n---\n" (5) → 10, 25, 40, ...
+        let entries: Vec<String> = (0..4).map(|_| "0123456789".to_string()).collect();
+        // budget 30 → first two fit (10, then 10+5+10=25), third exceeds (40)
+        assert_eq!(split_at_char_budget(&entries, 30), 2);
+        // budget 9 → not even the first fits
+        assert_eq!(split_at_char_budget(&entries, 9), 0);
+    }
+
+    #[test]
+    fn overlay_entries_are_not_persisted_or_double_counted() {
+        let mut store = MemoryStore {
+            memory_entries: vec!["global fact".to_string()],
+            ..Default::default()
+        };
+        store.overlay_memory_entries.push("project fact".to_string());
+
+        // Prompt shows both.
+        let formatted = store.format_for_prompt();
+        assert!(formatted.contains("global fact"));
+        assert!(formatted.contains("project fact"));
+
+        // Serialization for disk only ever includes the global entries.
+        let serialized = MemoryStore::serialize_entries(&store.memory_entries);
+        assert!(serialized.contains("global fact"));
+        assert!(!serialized.contains("project fact"));
+    }
+
+    #[test]
+    fn cap_under_max_no_change() {
+        let store = MemoryStore {
+            memory_entries: (0..10).map(|i| format!("entry {}", i)).collect(),
+            ..Default::default()
+        };
+        let config = MemoryConfig {
+            max_entries: 50,
+            summarize_threshold: 40,
+        };
+        // total is 10, under max_entries — manage should be a no-op
+        // (but manage is async and needs a client, just test the logic indirectly)
+        assert_eq!(store.memory_entries.len(), 10);
+        let _ = &config; // verify it compiles
+    }
 }

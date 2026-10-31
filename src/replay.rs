@@ -197,11 +197,14 @@ pub fn replay_session(
                     if tools_mode == &ReplayToolMode::Stubbed {
                         let icon = if is_error { "✗".red() } else { "✓".green() };
                         let preview: String = result.chars().take(100).collect();
+                        // Compare in chars, matching the char-based preview
+                        // above (a byte-length check would tack on a spurious
+                        // "…" for any multi-byte output under 100 chars).
                         println!(
                             "    {} Result: {}{}",
                             icon,
                             preview.dimmed(),
-                            if result.len() > 100 { "…" } else { "" }
+                            if result.chars().count() > 100 { "…" } else { "" }
                         );
                     }
                 }

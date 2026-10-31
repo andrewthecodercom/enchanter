@@ -910,18 +910,20 @@ fn tool_memory(args: &Value, memory: &mut MemoryStore) -> String {
         }
         "list" => {
             let mut result = String::new();
-            if memory.user_entries.is_empty() && memory.memory_entries.is_empty() {
+            let user_entries: Vec<&String> = memory.all_user_entries().collect();
+            let memory_entries: Vec<&String> = memory.all_memory_entries().collect();
+            if user_entries.is_empty() && memory_entries.is_empty() {
                 return "(no memory entries)".to_string();
             }
-            if !memory.user_entries.is_empty() {
+            if !user_entries.is_empty() {
                 result.push_str("── USER ──\n");
-                for entry in &memory.user_entries {
+                for entry in &user_entries {
                     result.push_str(&format!("  {}\n", entry));
                 }
             }
-            if !memory.memory_entries.is_empty() {
+            if !memory_entries.is_empty() {
                 result.push_str("── NOTES ──\n");
-                for (i, entry) in memory.memory_entries.iter().enumerate() {
+                for (i, entry) in memory_entries.iter().enumerate() {
                     result.push_str(&format!("  [{}] {}\n", i + 1, entry));
                 }
             }

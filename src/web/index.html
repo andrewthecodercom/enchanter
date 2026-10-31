@@ -338,10 +338,16 @@
     return resp.status === 401;
   }
 
+  // Guard against an unstoppable alert loop: pollStatus/loadResources fire
+  // every 3s, and each 401 would otherwise pop a new blocking alert forever.
+  let unauthorizedPrompted = false;
+
   function handleUnauthorized() {
-    alert("Invalid or missing token — set it with the 🔑 button");
     token = "";
     localStorage.removeItem(TOKEN_KEY);
+    if (unauthorizedPrompted) return;
+    unauthorizedPrompted = true;
+    alert("Invalid or missing token — set it with the 🔑 button");
   }
 
   function setToken() {
@@ -350,6 +356,7 @@
     token = entered.trim();
     if (token) localStorage.setItem(TOKEN_KEY, token);
     else localStorage.removeItem(TOKEN_KEY);
+    unauthorizedPrompted = false;
     location.reload();
   }
 
@@ -374,23 +381,34 @@
   }
 
   function renderStatus(s) {
+    s = s || {};
+    // The server's status payload uses token_usage.{prompt,completion};
+    // guard for a missing object entirely (callers pass `j.status || {}`).
+    const tu = s.token_usage || {};
     $("sessionTitle").textContent = s.session_title || "";
     $("ctxInfo").textContent =
       "ctx " + fmtTokens(s.estimated_context_tokens) +
       (s.context_budget != null ? "/" + fmtTokens(s.context_budget) : "") +
-      " · in " + fmtTokens(s.token_usage.prompt_tokens) +
-      " · out " + fmtTokens(s.token_usage.completion_tokens) +
-      " · tools " + s.tool_count +
+      " · in " + fmtTokens(tu.prompt) +
+      " · out " + fmtTokens(tu.completion) +
+      " · tools " + (s.tool_count != null ? s.tool_count : "–") +
       (s.mcp_tool_count ? "+" + s.mcp_tool_count + " MCP" : "") +
-      " · skills " + s.skill_count +
+      " · skills " + (s.skill_count != null ? s.skill_count : "–") +
       " · turns " + (s.max_turns != null ? s.max_turns : "∞") +
       (s.soft_limit != null ? " (soft " + s.soft_limit + ")" : "");
-    if (s.model && !modelSel.options.namedItem(s.model)) {
+    if (s.model && !hasOption(modelSel, s.model)) {
       const opt = document.createElement("option");
       opt.value = s.model;
       opt.textContent = s.model + " (default)";
       modelSel.add(opt);
     }
+  }
+
+  // options.namedItem() matches name/id attributes, not values — using it to
+  // check "is this model already listed?" always returned null, so the
+  // 3-second status poll appended a duplicate option every time.
+  function hasOption(sel, value) {
+    return Array.from(sel.options).some((o) => o.value === value);
   }
 
   function addRow(role, text) {
@@ -517,9 +535,13 @@
           if (!j.ok) setStatus("approval: " + (j.error || "failed"), "error");
         })
         .catch(() => {
-          if (approve) approveBtn.textContent = "Approved";
-          else rejectBtn.textContent = "Rejected";
-          setStatus("approval request failed", "error");
+          // The decision never reached the server — don't claim it did.
+          // Re-enable so the user can retry (the agent is still waiting).
+          approveBtn.disabled = false;
+          rejectBtn.disabled = false;
+          approveBtn.textContent = "Approve";
+          rejectBtn.textContent = "Reject";
+          setStatus("approval request failed — decision NOT delivered, retry", "error");
         });
     };
 
@@ -758,7 +780,7 @@
           opt.textContent = p.name + " → " + p.model;
           modelSel.add(opt);
         });
-        if (j.current && !modelSel.options.namedItem(j.current)) {
+        if (j.current && !hasOption(modelSel, j.current)) {
           const opt = document.createElement("option");
           opt.value = j.current;
           opt.textContent = j.current + " (default)";

@@ -744,18 +744,20 @@ async fn handle_command(
         }
         Commands::Memory => {
             println!("{}", "═══ MEMORY ═══".bright_cyan());
-            if memory.memory_entries.is_empty() && memory.user_entries.is_empty() {
+            let user_entries: Vec<&String> = memory.all_user_entries().collect();
+            let memory_entries: Vec<&String> = memory.all_memory_entries().collect();
+            if memory_entries.is_empty() && user_entries.is_empty() {
                 println!("(empty)");
             } else {
-                if !memory.user_entries.is_empty() {
+                if !user_entries.is_empty() {
                     println!("{}", "── USER ──".bright_blue());
-                    for entry in &memory.user_entries {
+                    for entry in &user_entries {
                         println!("  {}", entry.chars().take(100).collect::<String>());
                     }
                 }
-                if !memory.memory_entries.is_empty() {
+                if !memory_entries.is_empty() {
                     println!("{}", "── NOTES ──".bright_blue());
-                    for (i, entry) in memory.memory_entries.iter().enumerate() {
+                    for (i, entry) in memory_entries.iter().enumerate() {
                         println!(
                             "  [{}] {}",
                             i + 1,

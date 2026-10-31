@@ -26,7 +26,10 @@ pub fn render_bar(
         None => format!("{}k", tokens / 1000),
     };
 
-    let short_id = &session_id[..8.min(session_id.len())];
+    // Char-safe truncation — session IDs can be non-ASCII (e.g. resumed
+    // sessions named from arbitrary file stems); byte slicing could panic
+    // mid-character.
+    let short_id: String = session_id.chars().take(8).collect();
     let short_model = model.rsplit_once('/').map(|(_, m)| m).unwrap_or(model);
 
     // Build candidate strings (longest to shortest)

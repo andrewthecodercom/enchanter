@@ -88,7 +88,7 @@ impl SkillsIndex {
             return Ok(());
         }
 
-        let existing_names: std::collections::HashSet<String> =
+        let mut existing_names: std::collections::HashSet<String> =
             self.skills.iter().map(|s| s.name.clone()).collect();
 
         for entry in WalkDir::new(dir)
@@ -100,6 +100,9 @@ impl SkillsIndex {
                 && let Some(skill) = parse_skill_file(entry.path(), dir)
                 && !existing_names.contains(&skill.name)
             {
+                // Register the name as we go so two skills with the same name
+                // under this dir don't both get added.
+                existing_names.insert(skill.name.clone());
                 self.skills.push(skill);
             }
         }

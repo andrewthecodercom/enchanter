@@ -109,7 +109,16 @@ struct McpServer {
     tools: Vec<McpToolDef>,
     config: McpServerConfig,
     restart_count: u32,
+    /// When the server was last restarted. Used to decay `restart_count`
+    /// after a long stable period so the MAX_RESTARTS limit still applies to
+    /// crash-loops (servers that restart fine and then die again quickly)
+    /// without permanently punishing a healthy long-lived server.
+    last_restart: Option<std::time::Instant>,
 }
+
+/// A server that has been up at least this long is considered stable; its
+/// restart counter is reset on the next failure.
+const RESTART_DECAY_WINDOW: Duration = Duration::from_secs(300);
 
 /// Read-only summary of a connected MCP server, for the web UI sidebar.
 pub struct McpServerSummary {
@@ -477,17 +486,26 @@ async fn parse_sse_http_response(resp: reqwest::Response, expected_id: u64) -> R
     use futures_util::StreamExt;
 
     let mut stream = resp.bytes_stream();
-    let mut buffer = String::new();
+    // Accumulate raw bytes and split on b'\n' — decoding each network chunk
+    // independently with from_utf8_lossy would corrupt multi-byte characters
+    // (emoji, CJK, …) that straddle a chunk boundary. A UTF-8 multi-byte
+    // sequence never contains a 0x0A byte, so line splitting on bytes is safe.
+    let mut buffer: Vec<u8> = Vec::new();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("reading SSE stream chunk")?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer.extend_from_slice(&chunk);
 
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+        while let Some(newline_pos) = buffer.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buffer.drain(..=newline_pos).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
+            let line = line.trim();
 
-            if let Some(data) = line.strip_prefix("data: ") {
+            // Accept both "data: payload" and the spec-legal "data:payload".
+            if let Some(data) = line
+                .strip_prefix("data:")
+                .map(|s| s.strip_prefix(' ').unwrap_or(s))
+            {
                 if data == "[DONE]" {
                     anyhow::bail!("HTTP MCP SSE stream ended without matching response");
                 }
@@ -533,6 +551,7 @@ impl McpServer {
             tools: Vec::new(),
             config: config.clone(),
             restart_count: 0,
+            last_restart: None,
         };
 
         // Initialize handshake
@@ -764,6 +783,18 @@ impl McpManager {
     async fn restart_server(&mut self, idx: usize) -> Result<()> {
         let server = &mut self.servers[idx];
 
+        // Decay the restart counter when the server has been stable for a
+        // long stretch — otherwise a healthy long-lived server would
+        // eventually exhaust MAX_RESTARTS from rare, unrelated crashes.
+        // Without this decay, resetting the counter on every successful
+        // restart (the old behavior) let a crash-looping server restart
+        // forever, defeating MAX_RESTARTS entirely.
+        if let Some(last) = server.last_restart
+            && last.elapsed() >= RESTART_DECAY_WINDOW
+        {
+            server.restart_count = 0;
+        }
+
         if server.restart_count >= MAX_RESTARTS {
             anyhow::bail!(
                 "MCP server '{}' has exceeded maximum restart attempts ({})",
@@ -772,7 +803,7 @@ impl McpManager {
             );
         }
 
-        server.restart_count += 1;
+        let carried_count = server.restart_count + 1;
 
         // Terminate old transport
         server.transport.terminate().await;
@@ -787,8 +818,10 @@ impl McpManager {
         let new_server = McpServer::new(&name, &config).await?;
 
         self.servers[idx] = new_server;
-        // Reset restart count on successful restart
-        self.servers[idx].restart_count = 0;
+        // Carry the restart budget across the replacement so crash-loops
+        // still hit the MAX_RESTARTS ceiling.
+        self.servers[idx].restart_count = carried_count;
+        self.servers[idx].last_restart = Some(std::time::Instant::now());
 
         Ok(())
     }

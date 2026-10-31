@@ -129,6 +129,12 @@ fn default_confidence() -> f32 {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct KnowledgeStore {
     pub entries: HashMap<String, KnowledgeEntry>,
+    /// Keys that came from a project overlay (`merge_from_dir`). They are
+    /// visible for the session but excluded from `save()`, so project-scoped
+    /// facts never leak permanently into the global kstore.json. Storing a
+    /// fact explicitly (via `store()`) promotes its key to global.
+    #[serde(skip)]
+    overlay_keys: std::collections::HashSet<String>,
 }
 
 impl KnowledgeStore {
@@ -145,17 +151,30 @@ impl KnowledgeStore {
         Ok(store)
     }
 
-    /// Save the knowledge store to disk.
+    /// Save the knowledge store to disk. Overlay-only entries (merged from a
+    /// project's kstore.json this session) are excluded — the global file must
+    /// not accumulate project-scoped facts.
     pub fn save(&self) -> Result<()> {
         let dir = knowledge_dir();
         std::fs::create_dir_all(&dir).context("creating knowledge directory")?;
         let path = kstore_path();
-        let content = serde_json::to_string_pretty(self).context("serializing knowledge store")?;
+        let persistable = Self {
+            entries: self
+                .entries
+                .iter()
+                .filter(|(k, _)| !self.overlay_keys.contains(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            overlay_keys: Default::default(),
+        };
+        let content =
+            serde_json::to_string_pretty(&persistable).context("serializing knowledge store")?;
         std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
     }
 
-    /// Store a fact. Creates or updates.
+    /// Store a fact. Creates or updates. An explicitly stored fact is always
+    /// global — if the key came from a project overlay it is promoted.
     pub fn store(&mut self, key: &str, value: &str, category: Category, source: Source) {
         let now = chrono::Utc::now().to_rfc3339();
         let existing = self.entries.get(key).map(|e| e.created_at.clone());
@@ -168,6 +187,7 @@ impl KnowledgeStore {
             created_at: existing.unwrap_or_else(|| now.clone()),
             updated_at: now,
         };
+        self.overlay_keys.remove(key);
         self.entries.insert(key.to_string(), entry);
     }
 
@@ -178,6 +198,7 @@ impl KnowledgeStore {
 
     /// Remove a fact by key. Returns true if it existed.
     pub fn forget(&mut self, key: &str) -> bool {
+        self.overlay_keys.remove(key);
         self.entries.remove(key).is_some()
     }
 
@@ -253,6 +274,9 @@ impl KnowledgeStore {
             .count();
 
         for (k, v) in project_store.entries {
+            // Track overlay provenance so save() keeps these out of the
+            // global kstore.json.
+            self.overlay_keys.insert(k.clone());
             self.entries.insert(k, v);
         }
 

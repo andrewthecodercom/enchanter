@@ -853,8 +853,14 @@ impl AgentSession {
             if result.has_tool_calls() {
                 let tool_calls = result.tool_calls.unwrap();
 
-                // Emit content that came alongside tool calls
-                if let Some(ref content) = result.content
+                // Emit content that came alongside tool calls. In streaming
+                // mode the tokens were already delivered through the
+                // streaming callback (which sends its own Event::Content per
+                // token) — re-sending the accumulated text here would print
+                // it a second time. Only the non-streaming path, which never
+                // invokes the callback, needs this explicit emit.
+                if self.no_stream
+                    && let Some(ref content) = result.content
                     && !content.is_empty()
                 {
                     sink.send(Event::Content {

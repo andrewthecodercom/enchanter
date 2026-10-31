@@ -374,7 +374,29 @@ async fn handle_connection(
             system,
             no_stream,
             no_tools,
+            cwd,
         } => {
+            // Adopt the client's working directory for this request. The
+            // daemon outlives the client that spawned it, so its process CWD
+            // is wherever it happened to be started — without this, relative
+            // paths in tool calls resolve against the wrong directory (and
+            // fail the allowed-paths check when that directory is gone or
+            // outside the sandbox). Connections are handled sequentially, so
+            // a process-wide chdir per request is safe.
+            if let Some(ref dir) = cwd
+                && let Err(e) = std::env::set_current_dir(dir)
+            {
+                let err_event = Event::Error {
+                    message: format!(
+                        "Failed to change working directory to '{}': {}",
+                        dir, e
+                    ),
+                };
+                if let Ok(jsonl) = err_event.to_jsonl() {
+                    let _ = writer.write_all(format!("{}\n", jsonl).as_bytes()).await;
+                }
+                return;
+            }
             // For stateless per-request behavior (matching inline -p mode),
             // we reset the agent's messages to just the system prompt for each request.
             // This ensures no history bleed between independent -p calls.
@@ -836,6 +858,11 @@ pub async fn chat_via_daemon(
         system,
         no_stream,
         no_tools,
+        // Send our working directory so the daemon resolves relative tool
+        // paths against the caller's directory, not its own spawn-time CWD.
+        cwd: std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
     };
 
     let mut stream = connect().await?;

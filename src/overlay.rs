@@ -37,7 +37,9 @@ pub fn discover_overlay(start_dir: &Path) -> Option<PathBuf> {
     let mut current = if start_dir.is_absolute() {
         start_dir.to_path_buf()
     } else {
-        std::env::current_dir().ok()?
+        // Honor a relative start_dir by resolving it against the CWD instead
+        // of silently searching from the CWD itself.
+        std::env::current_dir().ok()?.join(start_dir)
     };
 
     loop {

@@ -165,7 +165,12 @@ fn build_environment_block(_config: &Config, model: &str) -> String {
         lines.push(format!("User: {}", username));
     }
 
-    if let Ok(cwd) = std::env::var("PWD") {
+    // Prefer the real process CWD over $PWD: $PWD is unset on Windows and
+    // goes stale if the process changed directories (e.g. the daemon chdir()s
+    // to each client's working directory per request).
+    if let Ok(cwd) = std::env::current_dir() {
+        lines.push(format!("Working directory: {}", cwd.display()));
+    } else if let Ok(cwd) = std::env::var("PWD") {
         lines.push(format!("Working directory: {}", cwd));
     }
 
@@ -224,7 +229,7 @@ mod tests {
         let memory = MemoryStore {
             memory_entries: vec!["project uses rust".to_string()],
             user_entries: vec!["User is Andrew".to_string()],
-            summary: None,
+            ..Default::default()
         };
         let kstore = KnowledgeStore::default();
         let skills = SkillsIndex::default();
@@ -283,7 +288,7 @@ mod tests {
         let memory = MemoryStore {
             memory_entries: vec!["some fact".to_string()],
             user_entries: vec![],
-            summary: None,
+            ..Default::default()
         };
         let kstore = KnowledgeStore::default();
         let skills = SkillsIndex::default();
@@ -328,7 +333,7 @@ mod tests {
         let memory = MemoryStore {
             memory_entries: vec!["key fact".to_string()],
             user_entries: vec!["user pref".to_string()],
-            summary: None,
+            ..Default::default()
         };
         let kstore = KnowledgeStore::default();
         let skills = SkillsIndex::default();
